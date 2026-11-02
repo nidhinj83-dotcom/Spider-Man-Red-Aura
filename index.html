@@ -71,6 +71,9 @@
   #roamHelp { text-align:center; color:#8fa3d9; font-size:13px; padding:4px 8px 10px; }
   #roamTouch { display:none; justify-content:space-between; padding:8px; gap:8px; }
   @media (max-width:760px), (pointer:coarse){ #roamTouch{ display:flex; } #roamHelp{ display:none; } }
+  body.touch #touchBtns { display:flex; }
+  body.touch #roamTouch { display:flex; }
+  body.touch #keysHelp, body.touch #roamHelp { display:none; }
   @media (max-width:760px), (pointer:coarse){ #touchBtns{ display:flex; } #keysHelp{ display:none; } }
 </style>
 </head>
@@ -630,6 +633,7 @@ function startGame(){
   Object.keys(SCENES).forEach(function(k){ delete SCENES[k]._applied; });
   ABIL = { web:false, heal:false, super:false };
   bossWins = 0;
+  thugWins = 0;
   resetRoam();
   updateHUD();
   go('open1');
@@ -642,6 +646,7 @@ var cv, ctx, W = 900, H = 500;
 var fightActive = false, rafId = null, lastTs = 0;
 var curFightScene = null, fightKind = '';
 var bossWins = 0; // Nohan's escalation rule (Nov 1): every boss beaten, BOTH sides grow stronger
+var thugWins = 0; // Nohan's thug-growth rule (Nov 1): EVERY thug defeated makes Peter a little stronger — HP, damage, SUPER charge and SUPER damage
 var P = null;              // player
 var foes = [];             // enemies
 var projs = [];            // projectiles
@@ -708,8 +713,10 @@ function startFight(scene){
   // NOHAN'S ESCALATION RULE (Nov 1, 2026): every boss fight the enemies get stronger — and Peter gets stronger too.
   var BOSS_ORDER = { kingpin:1, miles:2, lizard_clean:3, lizard_super:3, lizard_u:3, mysterio:4 };
   var bord = BOSS_ORDER[fightKind] || 0;
-  P.atkBonus = 2 * bossWins;
-  P.max = 100 + 20 * bossWins; P.hp = P.max;
+  P.atkBonus = 2 * bossWins + thugWins;
+  P.superBonus = Math.min(15, thugWins);
+  P.superRate = 0.85 + Math.min(0.45, 0.03 * thugWins);
+  P.max = 100 + 20 * bossWins + 4 * thugWins; P.hp = P.max;
   if (bord > 1) { var hm = 1 + 0.25 * (bord - 1), dm = 1 + 0.15 * (bord - 1);
     foes.forEach(function(f){ if (!f.fake) { f.max = Math.round(f.max * hm); f.hp = f.max; f.dmg = Math.round(f.dmg * dm); } }); }
   if (bord >= 1) { setTimeout(function(){ setMsg('⚔️ BOSS ' + bord + ' — this enemy is stronger than the last… but so is Peter! ❤️ HP ' + P.max + ' · 👊 Hit ' + (9 + P.atkBonus) + (bossWins ? ' · Bosses beaten: ' + bossWins : ''), 3.6); }, 4800); }
@@ -752,9 +759,19 @@ function damageFoe(f, dmg, isSuper){
     if (Math.random() < 0.93) { popup(f.x, f.y-44, '⚡ TOO FAST!', '#d1c4e9'); return; }
     dmg = 1;
   }
+  var hpBefore = f.hp;
   f.hp -= dmg; f.flash = 0.18;
   burst(f.x, f.y, isSuper ? '#ff5252' : '#ffe082', isSuper ? 12 : 6);
-  P.superMeter = Math.min(100, P.superMeter + dmg * 0.85);
+  P.superMeter = Math.min(100, P.superMeter + dmg * (P.superRate || 0.85));
+  if (hpBefore > 0 && f.hp <= 0 && f.kind === 'thug') {
+    // NOHAN'S THUG-GROWTH RULE: a little stronger in EVERY way, every single time.
+    thugWins++;
+    P.max += 4; P.hp = Math.min(P.max, P.hp + 4);
+    P.atkBonus = (P.atkBonus || 0) + 1;
+    P.superBonus = Math.min(15, thugWins);
+    P.superRate = 0.85 + Math.min(0.45, 0.03 * thugWins);
+    setMsg('⬆️ THUG DOWN! Peter grows a little — ❤️ ' + P.max + ' HP · 👊 Hit ' + (9 + P.atkBonus) + ' · 🔴 SUPER charges faster + hits harder! (Thugs beaten: ' + thugWins + ')', 1.8);
+  }
   if (f.kind === 'miles' && sparPhase === 2 && f.hp <= f.max * 0.3) { endFight(true); }
 }
 function nearestFoe(){
@@ -795,7 +812,7 @@ function update(dt){
     P.atkCd = 0.32;
     var nf = nearestFoe();
     if (nf.f && nf.d < 100) {
-      var dmg = (P.superT > 0 ? 26 : 9) + (P.atkBonus || 0);
+      var dmg = (P.superT > 0 ? 26 + (P.superBonus || 0) : 9) + (P.atkBonus || 0);
       damageFoe(nf.f, dmg, P.superT > 0);
       nf.f.x += (nf.f.x - P.x) * 0.06; nf.f.y += (nf.f.y - P.y) * 0.06;
     } else { burst(P.x + P.face*34, P.y, '#ffffff', 2); }
@@ -1047,6 +1064,7 @@ document.addEventListener('keyup', function(e){
   if (KEYMAP[e.code]) keysHeld[KEYMAP[e.code]] = false;
   if (e.code === 'Space' || e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyU') roamSwing = false;
 });
+window.addEventListener('touchstart', function(){ document.body.classList.add('touch'); }, { passive:true });
 function bindTouch(){
   var btns = document.querySelectorAll('#touchBtns button');
   Array.prototype.forEach.call(btns, function(b){
