@@ -629,6 +629,7 @@ function startGame(){
   S = newState();
   Object.keys(SCENES).forEach(function(k){ delete SCENES[k]._applied; });
   ABIL = { web:false, heal:false, super:false };
+  bossWins = 0;
   resetRoam();
   updateHUD();
   go('open1');
@@ -640,6 +641,7 @@ function startGame(){
 var cv, ctx, W = 900, H = 500;
 var fightActive = false, rafId = null, lastTs = 0;
 var curFightScene = null, fightKind = '';
+var bossWins = 0; // Nohan's escalation rule (Nov 1): every boss beaten, BOTH sides grow stronger
 var P = null;              // player
 var foes = [];             // enemies
 var projs = [];            // projectiles
@@ -667,7 +669,16 @@ var FIGHTS = {
   lizard_clean: { label:'🦎 THE LIZARD',   make:function(){ return [mkFoe('lizard',620,250)]; } },
   lizard_super: { label:'🦎 THE LIZARD',   make:function(){ return [mkFoe('lizard',620,250)]; } },
   lizard_u:     { label:'🦎 THE LIZARD',   make:function(){ return [mkFoe('lizard',620,250)]; } },
-  mysterio:     { label:'🎭 MYSTERIO',     make:function(){ return [mkFoe('mysterio',620,200)]; } }
+  mysterio:     { label:'🎭 MYSTERIO',     make:function(){ return [mkFoe('mysterio',620,200)]; } },
+  street:       { label:'🥷 STREET THUG',  make:function(){
+    // Nohan's street enemies (Nov 1): strength climbs the SAME ladder as the bosses (bossWins).
+    var t = bossWins, n = 1 + (t >= 2 ? 1 : 0) + (t >= 4 ? 1 : 0), out = [];
+    FIGHTS.street.label = t >= 4 ? '☀️ ELITE HUNTER' : t >= 3 ? '🦹 ARMORED BRUTE' : t >= 2 ? '🦹 TOUGH THUG' : '🥷 STREET THUG';
+    for (var i = 0; i < n; i++) { var f = mkFoe('thug', 620, 200 + i * 110);
+      f.max = 30 + 26 * t; f.hp = f.max; f.dmg = 5 + 2 * t; f.speed = 105 + 6 * t;
+      if (t >= 2) f.emoji = '🦹'; if (t >= 4) f.emoji = '☀️';
+      out.push(f); }
+    return out; } }
 };
 function mkFoe(kind, x, y){
   var base = { kind:kind, x:x, y:y, atkCd:1+Math.random(), windup:0, stun:0, slow:0, flash:0,
@@ -694,6 +705,14 @@ function startFight(scene){
         healCharges:2, superMeter:0, superT:0, flash:0, face:1 };
   if (fightKind === 'lizard_super') P.superMeter = 55;
   foes = FIGHTS[fightKind].make();
+  // NOHAN'S ESCALATION RULE (Nov 1, 2026): every boss fight the enemies get stronger — and Peter gets stronger too.
+  var BOSS_ORDER = { kingpin:1, miles:2, lizard_clean:3, lizard_super:3, lizard_u:3, mysterio:4 };
+  var bord = BOSS_ORDER[fightKind] || 0;
+  P.atkBonus = 2 * bossWins;
+  P.max = 100 + 20 * bossWins; P.hp = P.max;
+  if (bord > 1) { var hm = 1 + 0.25 * (bord - 1), dm = 1 + 0.15 * (bord - 1);
+    foes.forEach(function(f){ if (!f.fake) { f.max = Math.round(f.max * hm); f.hp = f.max; f.dmg = Math.round(f.dmg * dm); } }); }
+  if (bord >= 1) { setTimeout(function(){ setMsg('⚔️ BOSS ' + bord + ' — this enemy is stronger than the last… but so is Peter! ❤️ HP ' + P.max + ' · 👊 Hit ' + (9 + P.atkBonus) + (bossWins ? ' · Bosses beaten: ' + bossWins : ''), 3.6); }, 4800); }
   projs = []; pops = []; parts = [];
   sparPhase = 0; sparTimer = 0; eruptT = -1; fightTime = 0;
   document.getElementById('bossLabel').textContent = FIGHTS[fightKind].label;
@@ -705,7 +724,11 @@ function startFight(scene){
 function stopFight(){ fightActive = false; if (rafId) cancelAnimationFrame(rafId); rafId = null; }
 function endFight(win){
   stopFight();
-  if (win) { go(curFightScene.next); }
+  if (win) {
+    if (fightKind === 'street') { exitStreetFight(); return; }
+    if ({ kingpin:1, miles:1, lizard_clean:1, lizard_super:1, lizard_u:1, mysterio:1 }[fightKind]) bossWins++;
+    go(curFightScene.next);
+  }
 }
 function winCurrentFight(){ if (fightActive) endFight(true); }
 
@@ -772,7 +795,7 @@ function update(dt){
     P.atkCd = 0.32;
     var nf = nearestFoe();
     if (nf.f && nf.d < 100) {
-      var dmg = P.superT > 0 ? 26 : 9;
+      var dmg = (P.superT > 0 ? 26 : 9) + (P.atkBonus || 0);
       damageFoe(nf.f, dmg, P.superT > 0);
       nf.f.x += (nf.f.x - P.x) * 0.06; nf.f.y += (nf.f.y - P.y) * 0.06;
     } else { burst(P.x + P.face*34, P.y, '#ffffff', 2); }
@@ -1115,11 +1138,30 @@ var roamSwing = false, roamDeeds = 0, roamTime = 0;
 var roamRaf = null, roamLastTs = 0, rcv = null, rctx = null;
 var roamMsg = '', roamMsgT = 0;
 var crimes = [];
+var streetFoes = [], streetCd = 0;
+function randLandPos(){ return { x: LAND.x + 90 + Math.random() * (LAND.w - 180), y: LAND.y + 90 + Math.random() * (LAND.h - 180) }; }
+function spawnStreetFoe(sf){ var p = randLandPos(); sf.x = p.x; sf.y = p.y; sf.wx = p.x; sf.wy = p.y; sf.wt = 0; sf.active = true; sf.t = 0; }
+function startStreetFight(){
+  roamLast = { x: RP.x, y: RP.y };
+  roamActive = false;
+  if (roamRaf) cancelAnimationFrame(roamRaf); roamRaf = null;
+  keysHeld = {}; roamSwing = false;
+  startFight({ fight:'street', intro:'⚔️ A street enemy attacks! Strength tier ' + (bossWins + 1) + ' — win for a good deed!', next:null });
+}
+function exitStreetFight(){
+  roamDeeds++;
+  roamMsg = '⚔️ Street fight won! The city is safer. 💛 Good deeds: ' + roamDeeds;
+  roamMsgT = 3;
+  streetCd = 2.5;
+  enterRoam(roamPending);
+}
 function resetRoam(){
   roamActive = false; roamPending = null; roamDeeds = 0; roamTime = 0;
   RP.x = LOCS.rooftop.x; RP.y = LOCS.rooftop.y; RP.faceX = 1; RP.faceY = 0;
   roamLast = { x: LOCS.rooftop.x, y: LOCS.rooftop.y };
   roamSwing = false; roamMsg = ''; roamMsgT = 0; crimes = [];
+  streetFoes = []; streetCd = 0;
+  for (var si = 0; si < 4; si++) { var nf = {}; spawnStreetFoe(nf); streetFoes.push(nf); }
   [[900,900],[2400,600],[2600,1900],[1000,2300],[2150,2250]].forEach(function(s){
     crimes.push({ x:s[0], y:s[1], active:true, t:0 });
   });
@@ -1187,6 +1229,21 @@ function roamUpdate(dt){
       cr.active = false; cr.t = 25; roamDeeds++;
       roamMsg = '🆘 Street crime stopped! The city notices. 💛 Good deeds: ' + roamDeeds;
       roamMsgT = 3;
+    }
+  });
+  // Nohan's street enemies (Nov 1): random foes wander the map — walk into one to FIGHT.
+  // Strength follows the boss ladder: weak before Miles, stronger after each boss.
+  // Street wins add a good deed ONLY — they never touch S, bossWins, or any ending.
+  if (streetCd > 0) streetCd -= dt;
+  streetFoes.forEach(function(sf){
+    if (!sf.active) { sf.t -= dt; if (sf.t <= 0) spawnStreetFoe(sf); return; }
+    sf.wt -= dt;
+    var dw = Math.hypot(sf.wx - sf.x, sf.wy - sf.y);
+    if (sf.wt <= 0 || dw < 8) { var wp = randLandPos(); sf.wx = wp.x; sf.wy = wp.y; sf.wt = 6 + Math.random() * 5; }
+    else { sf.x += (sf.wx - sf.x) / dw * 42 * dt; sf.y += (sf.wy - sf.y) / dw * 42 * dt; }
+    if (streetCd <= 0 && Math.hypot(RP.x - sf.x, RP.y - sf.y) < 46) {
+      sf.active = false; sf.t = 22;
+      startStreetFight();
     }
   });
   var gate = ROAM_GATES[roamPending]; if (!gate) return;
@@ -1259,6 +1316,15 @@ function roamDraw(){
     c.beginPath(); c.arc(cx0, cy0, 20 + Math.sin(roamTime*5)*3, 0, 6.283);
     c.strokeStyle = 'rgba(255,213,79,0.75)'; c.lineWidth = 2.5; c.stroke();
     c.font = '22px serif'; c.fillText('🆘', cx0, cy0);
+  });
+  // Nohan's street enemies — red rings; walk into one to fight it
+  streetFoes.forEach(function(sf){
+    if (!sf.active) return;
+    var sx = sf.x - camX, sy = sf.y - camY;
+    if (sx < -30 || sy < -30 || sx > 930 || sy > 530) return;
+    c.beginPath(); c.arc(sx, sy, 20 + Math.sin(roamTime * 5 + 2) * 3, 0, 6.283);
+    c.strokeStyle = 'rgba(255,82,82,0.8)'; c.lineWidth = 2.5; c.stroke();
+    c.font = '22px serif'; c.fillText(bossWins >= 4 ? '☀️' : bossWins >= 2 ? '🦹' : '🥷', sx, sy);
   });
   // landmarks
   Object.keys(LOCS).forEach(function(k){
